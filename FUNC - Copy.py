@@ -1,0 +1,1117 @@
+from matplotlib import pyplot as plt
+import numpy as np
+import os
+import glob
+import cv2
+import sys
+from scipy import stats
+from scipy.spatial import distance
+from skimage import color
+from skimage import io
+import re
+import math
+from skimage.filters import sobel
+from skimage.filters import threshold_otsu
+from skimage import filters
+from skimage.transform import hough_circle
+from skimage.draw import circle_perimeter
+from skimage.graph import route_through_array
+
+########################################
+
+def circlefit( image_filename      =   '',
+               override_default    =   True,
+               center              =   [None, None],
+               crop                =   None,
+               threshold           =   None,
+               radii               =   [None, None] ):
+
+    image = io.imread(image_filename)
+    gray = color.rgb2gray(image)*float((2**16)-1)
+    x_res, y_res = list(np.shape(gray))
+    xc, yc = (x_res-1)/2, (y_res-1)/2
+
+    plt.close()
+    f = plt.figure(1, figsize=(6,4))
+    ax1 = plt.subplot(2,3,1)
+
+    # grayscale image
+    ax1.imshow(gray, cmap='gray')
+    # ax1.axvline(x = xc, linestyle='-', color='black')
+    # ax1.axhline(y = yc, linestyle='-', color='black')
+    ax1.set_xticks([])
+    ax1.set_yticks([])
+    ax1.set_title('Grayscale Image')
+    ax1.set_xlim(0,x_res)
+    ax1.set_ylim(0,y_res)
+
+    plt.show(block=False)
+
+    # centered image
+    if override_default == True or np.array_equal(center, [None, None]):
+        center = np.array([int(xc), int(yc)])
+
+    radius = int(min(center[0], center[1], x_res-1-center[0], y_res-1-center[1]))
+    gray_centered = gray[center[1]-radius:center[1]+radius+1, center[0]-radius:center[0]+radius+1]
+
+    ax2 = plt.subplot(2,3,2)
+    ax2.set_title('Centered Image')
+    ax2.set_aspect('equal')
+    ax2.set_xticks([])
+    ax2.set_yticks([])
+    ax2.imshow(gray_centered, cmap='gray', extent=[-radius,+radius,-radius,+radius])
+    ax2.set_xlim(-radius,+radius)
+    ax2.set_ylim(-radius,+radius)
+    # ax2.axvline(x = 0, linestyle='-', color='black')
+    # ax2.axhline(y = 0, linestyle='-', color='black')
+    plt.show(block=False)
+
+    # cropped image
+    if override_default == True or crop == None:
+        crop = int(round(min(center[0], center[1], x_res-1-center[0], y_res-1-center[1]))) - 1
+
+    gray_crop = gray_centered[radius-crop:radius+crop+1,radius-crop:radius+crop+1]
+
+    ax3 = plt.subplot(2,3,3)
+    ax3.set_title('Cropped Image')
+    ax3.set_aspect('equal')
+    ax3.set_xticks([])
+    ax3.set_yticks([])
+    ax3.imshow(gray_crop, cmap='gray', extent=[-(crop+0.5),+(crop+0.5),-(crop+0.5),+(crop+0.5)])
+    plt.show(block=False)
+
+    # edge sobel image
+    gray_filter = filters.gaussian(gray_crop)
+    edge_sobel = sobel(gray_filter).astype('int')
+    min_val, max_val = edge_sobel.min(), edge_sobel.max()
+
+    ax4 = plt.subplot(2,3,4)
+    ax4.set_title('Edge Sobel Image')
+    ax4.set_aspect('equal')
+    ax4.set_xticks([])
+    ax4.set_yticks([])
+    ax4.imshow(edge_sobel, cmap='gray', extent=[-(crop+0.5),+(crop+0.5),-(crop+0.5),+(crop+0.5)])
+
+    # binary image
+    if override_default == True or threshold == None:
+        binary = edge_sobel < int(threshold_otsu(edge_sobel))
+    else:
+        if threshold > 0:
+            binary = edge_sobel > abs(threshold)
+        else:
+            binary = edge_sobel < abs(threshold)
+
+    ax5 = plt.subplot(2,3,5)
+    ax5.set_title('Binary Image')
+    ax5.set_aspect('equal')
+    ax5.set_xticks([])
+    ax5.set_yticks([])
+    ax5.imshow(binary, cmap='gray', extent=[-(crop+0.5),+(crop+0.5),-(crop+0.5),+(crop+0.5)])
+    ax5.set_xlim(-crop, +crop)
+    ax5.set_ylim(-crop, +crop)
+    plt.show(block=False)
+
+    if override_default == True or np.array_equal(radii, [None, None]):
+        radii = [1, 2]
+
+    hough_radii = np.arange(radii[0], radii[1], 1)
+    hough_res = hough_circle(binary, hough_radii)
+    ridx, r, c = np.unravel_index(np.argmax(hough_res), hough_res.shape)
+    x_circle_center = c
+    y_circle_center = r
+    rr, cc = circle_perimeter(r,c,hough_radii[ridx])
+    x_circle_perimeter = cc
+    y_circle_perimeter = rr
+
+    ax5.scatter(x_circle_center-crop, -(y_circle_center-crop), marker='x', color='red')
+    ax5.scatter(x_circle_perimeter-crop, -(y_circle_perimeter-crop), marker='.', color='red')
+    ax5.set_xlim(-crop, +crop)
+    ax5.set_ylim(-crop, +crop)
+
+    delta_x = center[0] - crop
+    delta_y = center[1] - crop
+
+    ax6 = plt.subplot(2,3,6)
+    ax6.set_title('Circlefit Image')
+    ax6.set_aspect('equal')
+    ax6.set_xticks([])
+    ax6.set_yticks([])
+    ax6.imshow(gray, cmap='gray')
+    ax6.scatter(x_circle_center+delta_x, y_circle_center+delta_y, marker='x', color='black')
+    ax6.scatter(x_circle_perimeter+delta_x, y_circle_perimeter+delta_y, marker='.', color='black')
+    ax6.set_xlim(0,x_res)
+    ax6.set_ylim(y_res,0)
+
+    center_px = [x_circle_center+delta_x, y_circle_center+delta_y]
+    radius_px = hough_radii[ridx]
+    radius_max_px = int(round(min(center_px[0], center_px[1], x_res-1-center_px[0], y_res-1-center_px[1])))
+
+    plt.show()
+
+    return center_px, radius_px, radius_max_px
+
+########################################
+
+def axisymmetric_average( unwrapped_filename = '',
+                           center_px = [None, None] ):
+
+    unwrapped = np.loadtxt(unwrapped_filename)
+    [x_res, y_res] = np.shape(unwrapped)
+
+    if np.array_equal(center_px, [None, None]) == True:
+        center_px = int([x_res/2, y_res/2])
+
+    max_radius_px = int(round(min( center_px[0],
+                                   center_px[1],
+                                   x_res-1-center_px[0],
+                                   y_res-1-center_px[1] )))
+
+    unwrapped_line = np.zeros(max_radius_px)
+    count = np.zeros(max_radius_px)
+
+    for i in range(x_res):
+        for j in range(y_res):
+            radius_px = int(distance.euclidean([i, j], [max_radius_px, max_radius_px]))
+            if radius_px >= 0 and radius_px < max_radius_px:
+                unwrapped_line[radius_px] = unwrapped[i,j] + unwrapped_line[radius_px]
+                count[radius_px] = count[radius_px] + 1
+
+    unwrapped_line = np.divide(unwrapped_line, count)
+
+    return unwrapped_line
+
+########################################
+
+def ray_profile( unwrapped_filename = '',
+                 center_px = [None, None],
+                 theta = None):
+
+    unwrapped = np.loadtxt(unwrapped_filename)
+    [x_res, y_res] = np.shape(unwrapped)
+
+    if np.array_equal(center_px, [None, None]) == True:
+        center_px = int([x_res/2, y_res/2])
+
+    if theta == None:
+        theta = 0
+
+    max_radius_px = int(round(min( center_px[0],
+                                   center_px[1],
+                                   x_res-1-center_px[0],
+                                   y_res-1-center_px[1] )))
+
+    theta_start = 0
+    theta_end = 360
+    delta_theta = round(np.degrees(np.arcsin(4/max_radius_px)),1)
+
+    theta_array = np.arange(theta_start, theta_end, delta_theta)
+    theta_n = len(theta_array)
+    radius_n = max_radius_px
+
+    complete_profile = np.zeros((theta_n,radius_n))
+
+    for i in range(theta_n):
+        theta = theta_start + (i*delta_theta)
+        for j in range(radius_n):
+            xx = int(round(center_px[0]+(j*np.cos(np.deg2rad(-theta)))))
+            yy = int(round(center_px[1]+(j*np.sin(np.deg2rad(-theta)))))
+            complete_profile[i,j] = unwrapped[yy,xx]
+
+    # plt.imshow(complete_profile, cmap='gray')
+    # plt.show()
+
+    unwrapped_axisymmetric = np.zeros(max_radius_px)
+
+    for j in range(max_radius_px):
+        xx = int(round(center_px[0]+(j*np.cos(np.deg2rad(-theta)))))
+        yy = int(round(center_px[1]+(j*np.sin(np.deg2rad(-theta)))))
+        unwrapped_axisymmetric[j] = unwrapped[yy,xx]
+
+    return unwrapped_axisymmetric
+
+########################################
+
+def estimate_height(unwrapped_axisymmetric = None):
+
+    if unwrapped_axisymmetric[0] < unwrapped_axisymmetric[-1]:
+        h_calculated_microns = unwrapped_axisymmetric/(10**3)
+    else:
+        h_calculated_microns = -unwrapped_axisymmetric/(10**3)
+
+    return h_calculated_microns
+
+########################################
+
+def lens_profile(r_mm = None, project = ''):
+
+    if '400' in project or 'la1172' in project:
+        print('\nf400 lens used (LA1172)')
+        f_lens = 400.0  #LA1172
+        R_lens = 206.0
+        lens_config = 'f0400'
+    elif '300' in project or 'la1484' in project:
+        print('\nf300 lens used (LA1484)')
+        f_lens = 300.0  #LA1484
+        R_lens = 154.5
+        lens_config = 'f0300'
+    elif '1000' in project or 'la1464' in project:
+        print('\nf1000 lens used (LA1464)')
+        f_lens = 1000.0  #LA1464
+        R_lens = 515.1
+        lens_config = 'f1000'
+    else:
+        f_lens = 0
+        R_lens = 0
+        lens_config = 'none'
+        print('No lens configuration detected. Exit the code.')
+
+    h_real_microns = (R_lens - np.sqrt((R_lens*R_lens)-(r_mm*r_mm)))*1000.0
+
+    return h_real_microns
+
+########################################
+
+def analysis_reference( image_filename  =   '',
+                        center          =   [None, None],
+                        px_microns      =   None):
+
+    image = io.imread(image_filename)
+    gray = color.rgb2gray(image)*float((2**16)-1)
+    x_res, y_res = list(np.shape(gray))
+
+    radius_px = int(round(min(center[0], center[1], x_res-1-center[0], y_res-1-center[1])))
+
+    xc = center[0]
+    yc = center[1]
+
+    mod_image_v = image
+
+    x_px = np.shape(mod_image_v)[0]
+    y_px = np.shape(mod_image_v)[1]
+
+    if '400' in image_filename or 'la1172' in image_filename:
+        print('\nf400 lens used (LA1172)')
+        f_lens = 400.0  #LA1172
+        R_lens = 206.0
+        lens_config = 'f0400'
+    elif '300' in image_filename or 'la1484' in image_filename:
+        print('\nf300 lens used (LA1484)')
+        f_lens = 300.0  #LA1484
+        R_lens = 154.5
+        lens_config = 'f0300'
+    elif '1000' in image_filename or 'la1464' in image_filename:
+        print('\nf1000 lens used (LA1464)')
+        f_lens = 1000.0  #LA1464
+        R_lens = 515.1
+        lens_config = 'f1000'
+    else:
+        f_lens = 0
+        R_lens = 0
+        lens_config = 'none'
+        print('No lens configuration detected. Exit the code.')
+
+    option = input('Correct (y/n)?: ')
+
+    if option == 'y' or 'Y':
+        r_microns = np.arange(0,radius_px,1)*px_microns
+        r_mm = r_microns/1000.0
+        h_microns = (R_lens - np.sqrt((R_lens*R_lens)-(r_mm*r_mm)))*1000.0
+
+        theta_start = 0
+        theta_end = 360
+        delta_theta = round(math.degrees(math.atan(2.0/radius_px)),1)
+        n = int((theta_end-theta_start)/delta_theta)
+        s = radius_px
+
+        output = np.zeros((n,s,3), dtype = int)
+
+        for i in range(n):
+            theta = theta_start + ((i-1)*delta_theta)
+            for j in range(s):
+                xx = int(round(xc+(j*np.cos(np.deg2rad(-theta)))))
+                yy = int(round(yc+(j*np.sin(np.deg2rad(-theta)))))
+                output[i,j,0] = mod_image_v[yy,xx,0]
+                output[i,j,1] = mod_image_v[yy,xx,1]
+                output[i,j,2] = mod_image_v[yy,xx,2]
+
+        R_sum = np.zeros(s)
+        G_sum = np.zeros(s)
+        B_sum = np.zeros(s)
+
+        for j in range(s):
+            count = 0
+            for i in range(n):
+                count = count + 1
+                R_sum[j] = R_sum[j] + output[i,j,0]
+                G_sum[j] = G_sum[j] + output[i,j,1]
+                B_sum[j] = B_sum[j] + output[i,j,2]
+
+        R_avg = R_sum/count
+        G_avg = G_sum/count
+        B_avg = B_sum/count
+        rgb_colors = np.dstack((R_avg, G_avg, B_avg))
+
+        ref_colors = image_sRGB_to_Lab(rgb_colors)
+        image_axi = image_axisymmetric(rgb_colors)
+
+        RGB = rgb_colors
+        Lab = ref_colors
+
+    else:
+
+        print('Please re-run the code using proper lens configuration')
+        r_mm = 0
+        h_microns = 0
+        rgb_colors = 0
+        ref_colors = 0
+        image_axi = 0
+
+    print('Analysis of reference image completed!!')
+
+    return radius_px, r_mm, h_microns, RGB, Lab
+    # return r_mm, h_microns, RGB, Lab, image_axi, lens_config
+
+########################################
+
+def image_readfile(image_name):
+    image_address = os.getcwd() + '/' + image_name
+    image = io.imread(image_address)
+    return image
+
+########################################
+
+def length_analysis(lengthscale_file):
+
+    f = os.getcwd()
+    main_lengthscale_file = f + '/' + lengthscale_file
+
+    rgb = io.imread(main_lengthscale_file)
+    gray = color.rgb2gray(rgb)*float((2**16)-1)
+
+    gray_filter = filters.gaussian(gray)
+    edge_sobel = sobel(gray_filter)
+    threshold = threshold_otsu(edge_sobel)
+    binary = edge_sobel > threshold
+
+    plt.figure(1)
+    plt.subplot(2,2,1)
+    plt.imshow(gray, cmap='gray')
+    plt.grid()
+    plt.title('Grayscale Image')
+
+    plt.subplot(2,2,2)
+    plt.imshow(gray_filter, cmap='gray')
+    plt.grid()
+    plt.title('Filtered Grayscale Image')
+
+    plt.subplot(2,2,3)
+    plt.imshow(edge_sobel, cmap='gray')
+    plt.grid()
+    plt.title('Edge Sobel Image')
+
+    plt.subplot(2,2,4)
+    plt.imshow(binary, cmap='gray')
+    plt.grid()
+    plt.title('Binary Image')
+    plt.show(block=False)
+
+    print('Approximate extents of diameter (in pixels) -')
+    left_extents = np.array(input('left extents = ').split(',')).astype('int')
+    right_extents = np.array(input('right extents = ').split(',')).astype('int')
+    top_extents = np.array(input('top extents = ').split(',')).astype('int')
+    bottom_extents = np.array(input('bottom extents = ').split(',')).astype('int')
+
+    diameter_minimum_value = np.mean([min(right_extents)-max(left_extents), min(bottom_extents)-max(top_extents)])
+    diameter_maximum_value = np.mean([max(right_extents)-min(left_extents), max(bottom_extents)-min(top_extents)])
+
+    hough_radii = np.arange(int(diameter_minimum_value/2), int(diameter_maximum_value/2), 1)
+    hough_res = hough_circle(binary, hough_radii)
+    ridx, r, c = np.unravel_index(np.argmax(hough_res), hough_res.shape)
+    rr, cc = circle_perimeter(r,c,hough_radii[ridx])
+
+    diameter_pixels = int(2*hough_radii[ridx])
+    print('\n')
+    # diameter_mm = input('Enter diameter value (in mm) = ')
+    diameter_mm = np.loadtxt('reference_lengthscale_mm.txt')
+    print('Diameter value (in mm) = ', diameter_mm)
+
+    length_scale_mm = int(diameter_mm)
+    length_pixels = int(diameter_pixels)
+    px_microns = round((1000.0*length_scale_mm)/length_pixels,3)
+
+    plt.close()
+    plt.figure(1)
+    plt.imshow(gray, cmap='gray')
+    plt.scatter(cc,rr)
+    plt.scatter(c,r)
+    plt.title('Grayscale Image')
+    plt.show(block=False)
+
+    print('Calculated diameter value (in pixels) =', length_pixels)
+    print('1 pixel =', px_microns, 'microns')
+
+    input('\nPress [ENTER] to continue...')
+    plt.close()
+
+    return px_microns
+
+########################################
+
+def find_center(image_v):
+
+    gray = color.rgb2gray(image_v)*float((2**16)-1)
+    gray_filter = filters.gaussian(gray)
+    edge_sobel = sobel(gray_filter)
+
+    threshold = int(threshold_otsu(edge_sobel))
+    binary = edge_sobel < threshold
+
+    x_res = np.shape(image_v)[0]
+    y_res = np.shape(image_v)[1]
+
+    print('########### THRESHOLD ###########')
+    print('Edge Sobel Image')
+    print('[min,max] = [{},{}]'.format(int(edge_sobel.min()),int(edge_sobel.max())))
+
+    plt.close()
+    plt.figure(1)
+    plt.subplot(2,2,1)
+    plt.imshow(gray, cmap='gray')
+    plt.title('Grayscale Image')
+
+    plt.subplot(2,2,2)
+    plt.imshow(gray_filter, cmap='gray')
+    plt.title('Filtered Grayscale Image')
+
+    plt.subplot(2,2,3)
+    plt.imshow(edge_sobel, cmap='gray')
+    plt.title('Edge Sobel Image')
+
+    plt.subplot(2,2,4)
+    plt.imshow(binary, cmap='gray')
+    plt.title('Binary Image')
+
+    plt.show(block=False)
+
+    print('Threshold start = {}'.format(threshold))
+    char = input('Correct (y/n)?: ')
+
+    while char != 'y':
+        threshold = int(input('Threshold = '))
+        binary = edge_sobel < threshold
+
+        plt.close()
+
+        plt.subplot(2,2,1)
+        plt.imshow(gray, cmap='gray')
+        plt.title('Grayscale Image')
+
+        plt.subplot(2,2,2)
+        plt.imshow(gray_filter, cmap='gray')
+        plt.title('Filtered Grayscale Image')
+
+        plt.subplot(2,2,3)
+        plt.imshow(edge_sobel, cmap='gray')
+        plt.title('Edge Sobel Image')
+
+        plt.subplot(2,2,4)
+        plt.imshow(binary, cmap='gray')
+        plt.title('Binary Image')
+
+        plt.show(block=False)
+        char = input('Correct (y/n)?: ')
+
+    print('Threshold done!!')
+    print('#################################\n')
+    plt.close()
+
+    print('############# CROP #############')
+    print('Binary Image')
+
+    plt.imshow(binary, cmap='gray')
+    plt.grid()
+    plt.title('Binary Image')
+    plt.show(block=False)
+
+    char = input('Crop image (y/n)?: ')
+
+    if char == 'y':
+        left_top_corner = np.array(input('left-top corner = ').split(',')).astype('int')
+        right_bottom_corner = np.array(input('right-bottom corner = ').split(',')).astype('int')
+    else:
+        left_top_corner = [0,0]
+        right_bottom_corner = [x_res,y_res]
+
+    binary_mod = binary[left_top_corner[1]:right_bottom_corner[1],left_top_corner[0]:right_bottom_corner[0]]
+
+    print('Crop done!!')
+    print('#################################\n')
+    plt.close()
+
+    print('########## CIRCLE FIT ##########')
+    print('Cropped Binary Image')
+
+    plt.imshow(binary_mod, cmap='gray')
+    plt.grid()
+    plt.title('Cropped Binary Image')
+    plt.show(block=False)
+
+    print('Approximate diameter extents (in pixels) -')
+    left_extents = np.array(input('left extents = ').split(',')).astype('int')
+    right_extents = np.array(input('right extents = ').split(',')).astype('int')
+    top_extents = np.array(input('top extents = ').split(',')).astype('int')
+    bottom_extents = np.array(input('bottom extents = ').split(',')).astype('int')
+
+    diameter_minimum_value = np.mean([min(right_extents)-max(left_extents), min(bottom_extents)-max(top_extents)])
+    diameter_maximum_value = np.mean([max(right_extents)-min(left_extents), max(bottom_extents)-min(top_extents)])
+
+    hough_radii = np.arange(int(diameter_minimum_value/2), int(diameter_maximum_value/2), 1)
+    hough_res = hough_circle(binary_mod, hough_radii)
+    ridx, r, c = np.unravel_index(np.argmax(hough_res), hough_res.shape)
+    rr, cc = circle_perimeter(r,c,hough_radii[ridx])
+
+    plt.close()
+    plt.imshow(binary_mod, cmap='gray')
+    plt.scatter(cc,rr)
+    plt.scatter(c,r)
+    plt.show()
+
+    xc, yc = c + left_top_corner[0], r + left_top_corner[1]
+    cc, rr = cc + left_top_corner[0], rr + left_top_corner[1]
+
+    center = [xc, yc]
+    radius = int(round(min(xc, yc, x_res-1-xc, y_res-1-yc)))
+
+    print('Circle fit done!!')
+    print('#################################\n')
+    plt.close()
+
+    # print('Center of newtons rings (in pixels) =', center)
+    # print('Radius of newtons rings (in pixels) =', radius)
+
+    # plt.close()
+    # plt.figure(2)
+    # plt.imshow(gray, cmap='gray')
+    # plt.scatter(cc,rr)
+    # plt.scatter(xc,yc)
+    # plt.title('Binary Image')
+    # plt.show(block=False)
+
+    # input('\nPress [ENTER] to continue...')
+    # plt.close()
+
+    return center, radius
+
+########################################
+
+def max_lateral_distance(image, center):
+
+    x_res, y_res = list(np.shape(image))
+    radius_max = int(round(min(xc, yc, x_res-1-xc, y_res-1-yc)))
+
+    return radius_max
+
+########################################
+
+def analysis_reference1( image_filename  =   '',
+                         center          =   [None, None],
+                         radius_max_px   =   None,
+                         px_microns      =   None):
+
+    image = io.imread(image_filename)
+    gray = color.rgb2gray(image)*float((2**16)-1)
+
+    radius_max = max_lateral_distance(gray, center)
+
+    return None
+
+########################################
+
+def savefile_reference(radius_px, r_mm, h_microns, rgb_colors, ref_colors, px_microns):
+
+    # f = os.getcwd()
+    # info_file = f + '/info_' + lens_config
+    # if os.path.exists(info_file):
+    #     print('\n**Info folder already exists**')
+    # else:
+    #     os.mkdir(info_file)
+    #
+    # os.chdir(info_file)
+
+    ref_colors1 = ref_colors[0,:,0]
+    ref_colors2 = ref_colors[0,:,1]
+    ref_colors3 = ref_colors[0,:,2]
+
+    ref_R = rgb_colors[0,:,0]
+    ref_G = rgb_colors[0,:,1]
+    ref_B = rgb_colors[0,:,2]
+
+    np.savetxt('radius.txt', [int(radius_px)], fmt='%d')
+    np.savetxt('r_mm.txt', r_mm, fmt='%0.6f')
+    np.savetxt('h_microns.txt', h_microns, fmt='%0.6f')
+    np.savetxt('px_microns.txt', [px_microns], fmt='%0.6f')
+
+    np.savetxt('ref_colors1.txt', ref_colors1, fmt='%0.6f')
+    np.savetxt('ref_colors2.txt', ref_colors2, fmt='%0.6f')
+    np.savetxt('ref_colors3.txt', ref_colors3, fmt='%0.6f')
+
+    np.savetxt('ref_R.txt', ref_R, fmt='%d')
+    np.savetxt('ref_G.txt', ref_G, fmt='%d')
+    np.savetxt('ref_B.txt', ref_B, fmt='%d')
+
+    print('Saving of reference image completed!!')
+
+    return None
+
+########################################
+
+def image_color_normalization(image, background):
+
+    R_avg = np.mean(background[:,:,0])
+    G_avg = np.mean(background[:,:,1])
+    B_avg = np.mean(background[:,:,2])
+
+    R_ratio = image[:,:,0]/R_avg
+    G_ratio = image[:,:,1]/G_avg
+    B_ratio = image[:,:,2]/B_avg
+    image_ratio = np.dstack((R_ratio, G_ratio, B_ratio))
+
+    max_val = max(R_ratio.max(), G_ratio.max(), B_ratio.max())
+    factor = 2.0
+
+    image_color_corrected = (image_ratio*((np.power(2.0,16.0)-1.0)/(factor*max_val))).astype(int)
+
+    return image_color_corrected
+
+########################################
+
+def analysis_experiment(mod_image_e, theta_start, theta_end, center, radius_px, px_microns):
+
+    xc = center[0]
+    yc = center[1]
+
+    x_px = np.shape(mod_image_e)[0]
+    y_px = np.shape(mod_image_e)[1]
+
+    r_microns = np.arange(0,radius_px+1,1)*px_microns
+    r_mm = r_microns/1000.0
+
+    # delta_theta = round(math.degrees(math.atan(2.0/radius_px)),1)
+    delta_theta = 0.1
+    n = int((theta_end-theta_start)/delta_theta)
+    s = radius_px + 1
+
+    output = np.zeros((n,s,3), dtype = int)
+
+    for i in range(n):
+        theta = theta_start + ((i-1)*delta_theta)
+        for j in range(s):
+            xx = int(round(xc+(j*np.cos(np.deg2rad(-theta)))))
+            yy = int(round(yc+(j*np.sin(np.deg2rad(-theta)))))
+            output[i,j,0] = mod_image_e[yy,xx,0]
+            output[i,j,1] = mod_image_e[yy,xx,1]
+            output[i,j,2] = mod_image_e[yy,xx,2]
+
+    R_sum = np.zeros(s)
+    G_sum = np.zeros(s)
+    B_sum = np.zeros(s)
+
+    for j in range(s):
+        count = 0
+        for i in range(n):
+            count = count + 1
+            R_sum[j] = R_sum[j] + output[i,j,0]
+            G_sum[j] = G_sum[j] + output[i,j,1]
+            B_sum[j] = B_sum[j] + output[i,j,2]
+
+    R_avg = R_sum/count
+    G_avg = G_sum/count
+    B_avg = B_sum/count
+
+    rgb_colors = np.dstack((R_avg, G_avg, B_avg))
+
+    ref_colors = image_sRGB_to_Lab(rgb_colors)
+    image_axi = image_axisymmetric(rgb_colors)
+
+    return r_mm, rgb_colors, ref_colors, image_axi
+
+########################################
+
+def analysis_drop_extents(image_axi, radius_px, rgb_colors, ref_colors):
+
+    l = int(np.mean([np.shape(image_axi)[0],np.shape(image_axi)[1]]))
+    s = int((l-1)/2)
+
+    rr, cc = circle_perimeter(0,0,radius_px)
+
+    plt.subplot(2,2,1)
+    plt.imshow(color_8bit(image_axi), extent=[-s,+s,-s,+s])
+    plt.xlim(-s,+s)
+    plt.ylim(-s,+s)
+
+    plt.subplot(2,2,3)
+    plt.imshow(color_8bit(image_axi), extent=[-s,+s,-s,+s])
+    plt.scatter(0,0, marker='x', color='black')
+    plt.scatter(cc,rr, marker='.', color='black')
+    plt.xlim(-s,+s)
+    plt.ylim(-s,+s)
+
+    plt.subplot(1,2,2)
+    plt.plot(range(len(ref_colors[0,:,0])), ref_colors[0,:,0], linestyle='-', color='black')
+    plt.scatter(range(len(ref_colors[0,:,0])), ref_colors[0,:,0], marker='x', color='red')
+    plt.grid()
+
+    plt.show(block=False)
+
+    radius_px_mod = radius_px
+
+    print('########### RADIUS ###########')
+    print(f"Start radius (in pixels) = {radius_px_mod}")
+    char = input('Correct (y/n)?: ')
+
+    while char != 'y':
+
+        radius_px_mod = int(input("Radius (in pixels) = "))
+        rr, cc = circle_perimeter(0,0,radius_px_mod)
+
+        plt.close()
+        plt.subplot(2,2,1)
+        plt.imshow(color_8bit(image_axi), extent=[-s,+s,-s,+s])
+        plt.xlim(-s,+s)
+        plt.ylim(-s,+s)
+
+        plt.subplot(2,2,3)
+        plt.imshow(color_8bit(image_axi), extent=[-s,+s,-s,+s])
+        plt.scatter(0,0, marker='x', color='black')
+        plt.scatter(cc,rr, marker='.', color='black')
+        plt.xlim(-s,+s)
+        plt.ylim(-s,+s)
+
+        plt.subplot(1,2,2)
+        plt.plot(range(len(ref_colors[0,:,0])), ref_colors[0,:,0], linestyle='-', color='black')
+        plt.scatter(range(len(ref_colors[0,:,0])), ref_colors[0,:,0], marker='x', color='red')
+        plt.axvline(x=radius_px_mod, linestyle='--', color='black')
+        plt.grid()
+
+        plt.show(block=False)
+
+        char = input('Correct (y/n)?: ')
+
+    print('Radius done!!')
+    print('#################################\n')
+    plt.close()
+
+    return radius_px_mod
+
+########################################
+
+def savefile_experimental(experiment_image_file, radius_px, r_mm, ref_colors, rgb_colors, px_microns, image_axi):
+
+    f = os.getcwd()
+    info_file = f + '/info'
+    if os.path.exists(info_file):
+        print('Info folder already exists!')
+    else:
+        os.mkdir(info_file)
+
+    os.chdir(info_file)
+
+    head, _, _ = experiment_image_file.partition('.')
+    experimental_folder = info_file + '/' + head
+
+    if os.path.exists(experimental_folder):
+        print('Experimental folder already exists!')
+    else:
+        os.mkdir(experimental_folder)
+
+    os.chdir(experimental_folder)
+
+    ref_colors1 = ref_colors[0,:,0]
+    ref_colors2 = ref_colors[0,:,1]
+    ref_colors3 = ref_colors[0,:,2]
+
+    ref_R = rgb_colors[0,:,0]
+    ref_G = rgb_colors[0,:,1]
+    ref_B = rgb_colors[0,:,2]
+
+    np.savetxt('radius.txt', [int(radius_px)], fmt='%d')
+    np.savetxt('r_mm.txt', r_mm, fmt='%0.6f')
+    np.savetxt('px_microns.txt', [px_microns], fmt='%0.6f')
+
+    np.savetxt('ref_colors1.txt', ref_colors1, fmt='%0.6f')
+    np.savetxt('ref_colors2.txt', ref_colors2, fmt='%0.6f')
+    np.savetxt('ref_colors3.txt', ref_colors3, fmt='%0.6f')
+
+    np.savetxt('ref_R.txt', ref_R, fmt='%d')
+    np.savetxt('ref_G.txt', ref_G, fmt='%d')
+    np.savetxt('ref_B.txt', ref_B, fmt='%d')
+
+    np.savetxt('bigger_picture_R.txt', image_axi[:,:,0], fmt='%d')
+    np.savetxt('bigger_picture_G.txt', image_axi[:,:,1], fmt='%d')
+    np.savetxt('bigger_picture_B.txt', image_axi[:,:,2], fmt='%d')
+
+    return None
+
+########################################
+
+def calculate_path_minimum_profile(de_Lab, start_location, end_location, r_exp_mm, h_ref_microns):
+
+    [RR,HH] = np.meshgrid(r_exp_mm, h_ref_microns)
+
+    r_start_index = np.array(np.where(r_exp_mm == start_location[0]))
+    h_start_index = np.array(np.where(h_ref_microns == start_location[1]))
+
+    r_end_index = np.array(np.where(r_exp_mm == end_location[0]))
+    h_end_index = np.array(np.where(h_ref_microns == end_location[1]))
+
+    indices, weight = route_through_array(de_Lab, [h_start_index, r_start_index], [h_end_index, r_end_index], fully_connected=True, geometric=True)
+    indices1 = np.asarray(indices)
+
+    r_path = RR[indices1[:,0],indices1[:,1]]
+    h_path = HH[indices1[:,0],indices1[:,1]]
+
+    path = np.array([r_path, h_path]).T
+    points = np.array([start_location, end_location])
+
+    return path, points
+
+########################################
+
+def image_sRGB_to_Lab(rgb_colors):
+
+    l = np.shape(rgb_colors)[1]
+    ref_colors = np.zeros(np.shape(rgb_colors), dtype = 'float')
+
+    for i in range(l):
+        lab = rgb2lab(rgb_colors[0,i,:])
+        ref_colors[0,i,0] = lab[0]
+        ref_colors[0,i,1] = lab[1]
+        ref_colors[0,i,2] = lab[2]
+
+    return ref_colors
+
+########################################
+
+def analysis_readme():
+
+    n = np.loadtxt('radius.txt', dtype='int')
+    px_microns = np.loadtxt('px_microns.txt')
+
+    R_ch = np.loadtxt('ref_R.txt')
+    G_ch = np.loadtxt('ref_G.txt')
+    B_ch = np.loadtxt('ref_B.txt')
+
+    L_ch = np.loadtxt('ref_colors1.txt')
+    a_ch = np.loadtxt('ref_colors2.txt')
+    b_ch = np.loadtxt('ref_colors3.txt')
+
+    sRGB = np.dstack((R_ch, G_ch, B_ch))
+    Lab = np.dstack((L_ch, a_ch, b_ch))
+
+    return n, sRGB, Lab, px_microns
+
+########################################
+
+def image_axisymmetric(rgb_colors):
+
+    l = np.shape(rgb_colors)[1]
+    a = int(np.floor((l-1)/np.sqrt(2)))
+    image_axi = np.zeros(((2*a)+1, (2*a)+1, 3), dtype=int)
+
+    for i in np.arange(0,(2*a)+1,1):
+        for j in np.arange(0,(2*a)+1,1):
+            dist = int(round(np.sqrt(((i-a)**2)+((j-a)**2))))
+            image_axi[i,j,0] = int(rgb_colors[0,dist,0])
+            image_axi[i,j,1] = int(rgb_colors[0,dist,1])
+            image_axi[i,j,2] = int(rgb_colors[0,dist,2])
+
+    return image_axi
+
+########################################
+
+def rgb2lab ( inputColor ) :
+
+   num = 0
+   RGB = [0, 0, 0]
+
+   for value in inputColor :
+       value = float(value) / ((2.0**16)-1.0)
+
+       if value > 0.04045 :
+           value = ( ( value + 0.055 ) / 1.055 ) ** 2.4
+       else :
+           value = value / 12.92
+
+       RGB[num] = value * 100
+       num = num + 1
+
+   XYZ = [0, 0, 0,]
+
+   X = RGB [0] * 0.4124 + RGB [1] * 0.3576 + RGB [2] * 0.1805
+   Y = RGB [0] * 0.2126 + RGB [1] * 0.7152 + RGB [2] * 0.0722
+   Z = RGB [0] * 0.0193 + RGB [1] * 0.1192 + RGB [2] * 0.9505
+   XYZ[ 0 ] = round( X, 4 )
+   XYZ[ 1 ] = round( Y, 4 )
+   XYZ[ 2 ] = round( Z, 4 )
+
+   XYZ[ 0 ] = float( XYZ[ 0 ] ) / 95.047         # ref_X =  95.047   Observer= 2 deg, Illuminant= D65
+   XYZ[ 1 ] = float( XYZ[ 1 ] ) / 100.0          # ref_Y = 100.000
+   XYZ[ 2 ] = float( XYZ[ 2 ] ) / 108.883        # ref_Z = 108.883
+
+   num = 0
+   for value in XYZ :
+
+       if value > 0.008856 :
+           value = value ** ( 0.3333333333333333 )
+       else :
+           value = ( 7.787 * value ) + ( 16 / 116 )
+
+       XYZ[num] = value
+       num = num + 1
+
+   Lab = [0, 0, 0]
+
+   L = ( 116 * XYZ[ 1 ] ) - 16
+   a = 500 * ( XYZ[ 0 ] - XYZ[ 1 ] )
+   b = 200 * ( XYZ[ 1 ] - XYZ[ 2 ] )
+
+   Lab [ 0 ] = round( L, 4 )
+   Lab [ 1 ] = round( a, 4 )
+   Lab [ 2 ] = round( b, 4 )
+
+   return Lab
+
+ ########################################
+
+def peakdetect(y_axis, x_axis = None, lookahead = 300, delta=0):
+    """
+    Converted from/based on a MATLAB script at:
+    http://billauer.co.il/peakdet.html
+
+    function for detecting local maximas and minmias in a signal.
+    Discovers peaks by searching for values which are surrounded by lower
+    or larger values for maximas and minimas respectively
+
+    keyword arguments:
+    y_axis -- A list containg the signal over which to find peaks
+    x_axis -- (optional) A x-axis whose values correspond to the y_axis list
+        and is used in the return to specify the postion of the peaks. If
+        omitted an index of the y_axis is used. (default: None)
+    lookahead -- (optional) distance to look ahead from a peak candidate to
+        determine if it is the actual peak (default: 200)
+        '(sample / period) / f' where '4 >= f >= 1.25' might be a good value
+    delta -- (optional) this specifies a minimum difference between a peak and
+        the following points, before a peak may be considered a peak. Useful
+        to hinder the function from picking up false peaks towards to end of
+        the signal. To work well delta should be set to delta >= RMSnoise * 5.
+        (default: 0)
+            delta function causes a 20% decrease in speed, when omitted
+            Correctly used it can double the speed of the function
+
+    return -- two lists [max_peaks, min_peaks] containing the positive and
+        negative peaks respectively. Each cell of the lists contains a tupple
+        of: (position, peak_value)
+        to get the average peak value do: np.mean(max_peaks, 0)[1] on the
+        results to unpack one of the lists into x, y coordinates do:
+        x, y = zip(*tab)
+    """
+    max_peaks = []
+    min_peaks = []
+    dump = []   #Used to pop the first hit which almost always is false
+
+    # check input data
+    x_axis, y_axis = _datacheck_peakdetect(x_axis, y_axis)
+    # store data length for later use
+    length = len(y_axis)
+
+
+    # #perform some checks
+    # if lookahead < 1:
+    #     raise ValueError, "Lookahead must be '1' or above in value"
+    # if not (np.isscalar(delta) and delta >= 0):
+    #     raise ValueError, "delta must be a positive number"
+
+    #maxima and minima candidates are temporarily stored in
+    #mx and mn respectively
+    mn, mx = np.Inf, -np.Inf
+
+    #Only detect peak if there is 'lookahead' amount of points after it
+    for index, (x, y) in enumerate(zip(x_axis[:-lookahead],
+                                        y_axis[:-lookahead])):
+        if y > mx:
+            mx = y
+            mxpos = x
+        if y < mn:
+            mn = y
+            mnpos = x
+
+        ####look for max####
+        if y < mx-delta and mx != np.Inf:
+            #Maxima peak candidate found
+            #look ahead in signal to ensure that this is a peak and not jitter
+            if y_axis[index:index+lookahead].max() < mx:
+                max_peaks.append([mxpos, mx])
+                dump.append(True)
+                #set algorithm to only find minima now
+                mx = np.Inf
+                mn = np.Inf
+                if index+lookahead >= length:
+                    #end is within lookahead no more peaks can be found
+                    break
+                continue
+            #else:  #slows shit down this does
+            #    mx = ahead
+            #    mxpos = x_axis[np.where(y_axis[index:index+lookahead]==mx)]
+
+        ####look for min####
+        if y > mn+delta and mn != -np.Inf:
+            #Minima peak candidate found
+            #look ahead in signal to ensure that this is a peak and not jitter
+            if y_axis[index:index+lookahead].min() > mn:
+                min_peaks.append([mnpos, mn])
+                dump.append(False)
+                #set algorithm to only find maxima now
+                mn = -np.Inf
+                mx = -np.Inf
+                if index+lookahead >= length:
+                    #end is within lookahead no more peaks can be found
+                    break
+            #else:  #slows shit down this does
+            #    mn = ahead
+            #    mnpos = x_axis[np.where(y_axis[index:index+lookahead]==mn)]
+
+
+    #Remove the false hit on the first value of the y_axis
+    try:
+        if dump[0]:
+            max_peaks.pop(0)
+        else:
+            min_peaks.pop(0)
+        del dump
+    except IndexError:
+        #no peaks were found, should the function return empty lists?
+        pass
+
+    return [max_peaks, min_peaks]
+
+########################################
+
+def _datacheck_peakdetect(x_axis, y_axis):
+    if x_axis is None:
+        x_axis = range(len(y_axis))
+
+    if len(y_axis) != len(x_axis):
+        raise (ValueError,
+                'Input vectors y_axis and x_axis must have same length')
+
+    #needs to be a numpy array
+    y_axis = np.array(y_axis)
+    x_axis = np.array(x_axis)
+    return x_axis, y_axis
+
+########################################
+
+def color_8bit(rgb):
+    return (rgb/((2**8)-1)).astype('uint8')
+
+########################################
